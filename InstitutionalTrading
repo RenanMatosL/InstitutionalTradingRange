@@ -1,0 +1,553 @@
+// Define o copyright e as configurações básicas do indicador.
+#property copyright "Institutional Trading Range: market volume profile (flexible time interval)"
+#property strict
+#property indicator_chart_window
+#property indicator_plots 0  // Define que o indicador não terá gráficos associados diretamente.
+
+// Macro para limitar valores dentro de um intervalo especificado.
+#define PUT_IN_RANGE(A, L, H) ((H) < (L) ? (A) : ((A) < (L) ? (L) : ((A) > (H) ? (H) : (A))))
+
+// Macro para verificar se a cor é "nenhuma".
+#define COLOR_IS_NONE(C) (((C) >> 24) != 0)
+
+// Macro para converter componentes RGB em uma única cor.
+#define RGB_TO_COLOR(R, G, B) ((color)((((B) & 0x0000FF) << 16) + (((G) & 0x0000FF) << 8) + ((R) & 0x0000FF)))
+
+// Macro para arredondar preços com base em um valor de ponto.
+#define ROUND_PRICE(A, P) ((int)((A) / P + 0.5))
+
+// Macro para normalizar preços com base em um valor de ponto.
+#define NORM_PRICE(A, P) (((int)((A) / P + 0.5)) * P)
+
+// Enumeração para escalas de pontos, usada em cálculos de preços.
+enum ENUM_POINT_SCALE
+{
+	POINT_SCALE_1 = 1,      // Multiplicador de 1.
+	POINT_SCALE_10 = 10,    // Multiplicador de 10.
+	POINT_SCALE_100 = 100,  // Multiplicador de 100.
+};
+
+// Enumeração para estilos de barras no histograma (apresentação visual dos dados de volume).
+enum ENUM_VP_BAR_STYLE
+{
+	VP_BAR_STYLE_LINE,        // Linha.
+	VP_BAR_STYLE_BAR,         // Barra vazia.
+	VP_BAR_STYLE_FILLED,      // Barra preenchida.
+	VP_BAR_STYLE_OUTLINE,     // Contorno.
+	VP_BAR_STYLE_COLOR        // Cor personalizada.
+};
+
+// Enumeração para origem dos dados usados no cálculo do volume.
+enum ENUM_VP_SOURCE
+{
+	VP_SOURCE_TICKS = 0,   // Baseado em ticks.
+	VP_SOURCE_M1 = 1,      // Baseado em velas de 1 minuto.
+	VP_SOURCE_M5 = 5,      // Baseado em velas de 5 minutos.
+	VP_SOURCE_M15 = 15,    // Baseado em velas de 15 minutos.
+	VP_SOURCE_M30 = 30,    // Baseado em velas de 30 minutos.
+};
+
+// Enumeração para modos de alcance do perfil de volume.
+enum ENUM_VP_RANGE_MODE
+{
+	VP_RANGE_MODE_BETWEEN_LINES = 0,   // Entre duas linhas.
+	VP_RANGE_MODE_LAST_MINUTES = 1,    // Últimos minutos.
+	VP_RANGE_MODE_MINUTES_TO_LINE = 2  // Minutos até uma linha específica.
+};
+
+// Enumeração para posição de histograma.
+enum ENUM_VP_HG_POSITION
+{
+	VP_HG_POSITION_WINDOW_LEFT = 0,    // Lado esquerdo da janela.
+	VP_HG_POSITION_WINDOW_RIGHT = 1,   // Lado direito da janela.
+	VP_HG_POSITION_LEFT_OUTSIDE = 2,   // Lado esquerdo externo.
+	VP_HG_POSITION_RIGHT_OUTSIDE = 3,  // Lado direito externo.
+	VP_HG_POSITION_LEFT_INSIDE = 4,    // Lado esquerdo interno.
+	VP_HG_POSITION_RIGHT_INSIDE = 5    // Lado direito interno.
+};
+
+// Entrada do usuário: modo de intervalo para cálculo do perfil de volume.
+input ENUM_VP_RANGE_MODE RangeMode = VP_RANGE_MODE_BETWEEN_LINES;
+
+// Entrada do usuário: número de minutos para considerar no cálculo do intervalo.
+input int RangeMinutes = 1440;
+
+// Passo no cálculo do modo (determina a granularidade dos dados em pontos).
+input int ModeStep = 100;
+
+// Escala de pontos para ajustar o intervalo dos preços.
+input ENUM_POINT_SCALE HgPointScale = POINT_SCALE_10;
+
+// Tipo de volume a ser usado no cálculo (real ou baseado em ticks).
+input ENUM_APPLIED_VOLUME VolumeType = VOLUME_TICK;
+
+// Origem dos dados de volume.
+input ENUM_VP_SOURCE DataSource = VP_SOURCE_M1;
+
+// Estilo de barra do histograma.
+input ENUM_VP_BAR_STYLE HgBarStyle = VP_BAR_STYLE_LINE;
+
+// Posição do histograma no gráfico.
+input ENUM_VP_HG_POSITION HgPosition = VP_HG_POSITION_WINDOW_RIGHT;
+
+// Cor 1 do histograma.
+input color HgColor = C'128,160,128';
+
+// Cor 2 do histograma.
+input color HgColor2 = C'128,160,128';
+
+// Largura das linhas do histograma.
+input int HgLineWidth = 1;
+
+// Cor do modo (nível de pico no histograma).
+input color ModeColor = clrBlue;
+
+// Cor máxima (se aplicável).
+input color MaxColor = clrNONE;
+
+// Cor mediana (se aplicável).
+input color MedianColor = clrNONE;
+
+// Cor do VWAP (Preço Médio Ponderado por Volume).
+input color VwapColor = clrNONE;
+
+// Largura da linha do modo.
+input int ModeLineWidth = 1;
+
+// Estilo de linha para medições estatísticas.
+input ENUM_LINE_STYLE StatLineStyle = STYLE_DOT;
+
+// Cor da linha de nível do modo.
+input color ModeLevelColor = Green;
+
+// Largura da linha de nível do modo.
+int ModeLevelWidth = 1;
+
+// Estilo da linha de nível do modo.
+input ENUM_LINE_STYLE ModeLevelStyle = STYLE_SOLID;
+
+// Identificador para objetos gráficos.
+input string Id = "+vpr";
+
+// Função chamada quando o indicador é inicializado.
+void OnInit()
+{
+	// Cria prefixos para nomes de objetos gráficos usados no indicador.
+	_prefix = Id + " m" + IntegerToString(RangeMode) + " ";
+	_tfn = Id + "-from";  // Identificador para a linha do tempo inicial.
+	_ttn = Id + "-to";    // Identificador para a linha do tempo final.
+
+	// Calcula a escala dos pontos com base no valor configurado.
+	_hgPoint = _Point * HgPointScale;  
+	_modeStep = ModeStep / HgPointScale;  
+
+	// Inicializa as configurações de estilos de barras.
+	_hgBarStyle = HgBarStyle;  
+	_hgPointDigits = GetPointDigits(_hgPoint);  
+
+	// Define cores padrão para o histograma.
+	_defaultHgColor1 = HgColor;
+	_defaultHgColor2 = HgColor2;
+
+	// Define a largura das linhas do histograma.
+	_hgLineWidth = HgLineWidth;
+
+	// Configura cores para modos (pico de volume), máximo, mediana e VWAP.
+	_modeColor = ModeColor;
+	_maxColor = MaxColor;
+	_medianColor = MedianColor;
+	_vwapColor = VwapColor;
+
+	// Configura largura e estilo das linhas para modos e outras estatísticas.
+	_modeLineWidth = ModeLineWidth;
+	_statLineStyle = StatLineStyle;
+
+	// Configurações para a linha de nível dos modos.
+	_modeLevelColor = ModeLevelColor;
+	_modeLevelWidth = ModeLevelWidth;
+	_modeLevelStyle = ModeLevelStyle;
+
+	// Flags para controlar visibilidade de elementos no gráfico.
+	_showHg = !(ColorIsNone(_hgColor1) && ColorIsNone(_hgColor2));  // Mostrar histograma.
+	_showModes = !ColorIsNone(_modeColor);                         // Mostrar modos.
+	_showMax = !ColorIsNone(_maxColor);                            // Mostrar máximo.
+	_showMedian = !ColorIsNone(_medianColor);                      // Mostrar mediana.
+	_showVwap = !ColorIsNone(_vwapColor);                          // Mostrar VWAP.
+	_showModeLevel = !ColorIsNone(_modeLevelColor);                // Mostrar linha de nível de modos.
+
+	// Configura o zoom do gráfico.
+	_zoom = MathAbs(Zoom);
+
+	// Cria um temporizador para atualizações periódicas.
+	_updateTimer = new MillisecondTimer(WaitMilliseconds, false);
+
+	// Configura o período dos dados de acordo com a origem configurada.
+	_dataPeriod = GetDataPeriod(DataSource);
+}
+
+// Função chamada para processar eventos do gráfico, como movimentação de objetos ou mudanças de parâmetros.
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+	// Verifica se o evento corresponde ao arrastar de um objeto específico (_tfn ou _ttn).
+	if (id == CHARTEVENT_OBJECT_DRAG)
+	{
+		if ((sparam == _tfn) || (sparam == _ttn))
+			CheckTimer();  // Atualiza o temporizador caso um desses objetos seja arrastado.
+	}
+
+	// Trata mudanças no gráfico, como alterações na visualização.
+	if (id == CHARTEVENT_CHART_CHANGE)
+	{
+		int firstVisibleBar = WindowFirstVisibleBar(); // Primeiro candle visível no gráfico.
+		int lastVisibleBar = firstVisibleBar - WindowBarsPerChart(); // Último candle visível.
+
+		// Atualiza variáveis de controle e verifica necessidade de redesenho.
+		bool update =
+			(_firstVisibleBar == _lastVisibleBar) ||  // Verifica se as barras visíveis mudaram.
+			(
+				((firstVisibleBar != _firstVisibleBar) || (lastVisibleBar != _lastVisibleBar)) &&
+				((HgPosition == VP_HG_POSITION_WINDOW_LEFT) || (HgPosition == VP_HG_POSITION_WINDOW_RIGHT))
+			);
+
+		_firstVisibleBar = firstVisibleBar;
+		_lastVisibleBar = lastVisibleBar;
+
+		// Caso os parâmetros visuais mudem, ajusta e redesenha o gráfico.
+		if (UpdateAutoColors())
+		{
+			_lastOK = false;
+			CheckTimer();
+		}
+		else if (update)
+		{
+			CheckTimer();
+		}
+	}
+}
+
+//funções auxiliares que realizam cálculos e manipulam arrays para gerar os dados necessários.
+// Função para calcular o índice de mediana em um array de volumes.
+int ArrayMedian(const double &values[])
+{
+	// Obtém o tamanho do array de volumes.
+	int size = ArraySize(values);
+
+	// Calcula o volume total e divide por dois para encontrar o volume mediano.
+	double halfVolume = Sum(values) / 2.0;
+
+	// Variável auxiliar para somar os volumes enquanto percorremos o array.
+	double v = 0;
+
+	// Percorre o array de volumes.
+	for (int i = 0; i < size; i++)
+	{
+		v += values[i];  // Acumula o volume atual.
+
+		// Verifica se a soma acumulada alcança ou excede a metade do volume total.
+		if (v >= halfVolume)
+			return(i);  // Retorna o índice correspondente à mediana.
+	}
+
+	return(-1);  // Retorna -1 caso a mediana não seja encontrada (improvável).
+}
+
+// Função para somar os elementos de um array.
+template <typename T>
+T Sum(const T &arr[], int start = 0, int count = -1)
+{
+	// Verifica se o intervalo do array é válido.
+	if (!ArrayCheckRange(arr, start, count))
+		return((T)NULL);  // Retorna nulo caso inválido.
+
+	// Variável para armazenar a soma total.
+	T sum = (T)NULL;
+
+	// Percorre os elementos dentro do intervalo definido.
+	for (int i = start, end = start + count; i < end; i++)
+		sum += arr[i];  // Soma os elementos.
+
+	return(sum);  // Retorna a soma total.
+}
+
+// Função para verificar se um intervalo em um array é válido.
+template <typename T>
+bool ArrayCheckRange(const T &arr[], int &start, int &count)
+{
+	// Obtém o tamanho do array.
+	int size = ArraySize(arr);
+
+	// Verifica se o array está vazio.
+	if (size <= 0)
+		return(false);
+
+	// Se o intervalo for zero, retorna inválido.
+	if (count == 0)
+		return(false);
+
+	// Verifica se o índice inicial está fora do intervalo do array.
+	if ((start > size - 1) || (start < 0))
+		return(false);
+
+	// Ajusta o intervalo caso ele ultrapasse os limites do array.
+	if (count < 0)
+	{
+		count = size - start;  // Define o tamanho restante do array.
+	}
+	else if (count > size - start)
+	{
+		count = size - start;  // Limita o intervalo ao tamanho restante.
+	}
+
+	return(true);  // Retorna verdadeiro se o intervalo for válido.
+}
+
+// Função para identificar o índice de um valor específico em um array.
+template <typename T>
+int ArrayIndexOf(const T &arr[], const T value, const int startingFrom = 0)
+{
+	// Obtém o tamanho do array.
+	int size = ArraySize(arr);
+
+	// Percorre o array a partir do índice inicial especificado.
+	for (int i = startingFrom; i < size; i++)
+	{
+		if (arr[i] == value)  // Verifica se o elemento atual corresponde ao valor procurado.
+			return(i);  // Retorna o índice do elemento encontrado.
+	}
+
+	return(-1);  // Retorna -1 caso o valor não seja encontrado.
+}
+
+//Funções mais complexas relacionadas ao cálculo de VWAP e o gerenciamento de ticks e dados históricos. 
+
+// Função para calcular o VWAP (Preço Médio Ponderado por Volume).
+int HgVwap(const double &volumes[], const double low, const double step)
+{
+	// Verifica se o passo (step) é válido.
+	if (step == 0)
+		return(-1);  // Retorna -1 caso inválido.
+
+	double vwap = 0;  // Variável para armazenar o cálculo do VWAP.
+	double totalVolume = 0;  // Total de volume negociado.
+	int size = ArraySize(volumes);  // Tamanho do array de volumes.
+
+	// Percorre os volumes para calcular o VWAP.
+	for (int i = 0; i < size; i++)
+	{
+		double price = low + i * step;  // Calcula o preço baseado no índice.
+		double volume = volumes[i];  // Obtém o volume correspondente.
+
+		vwap += price * volume;  // Soma o volume ponderado pelo preço.
+		totalVolume += volume;   // Soma o volume total.
+	}
+
+	// Verifica se o total de volume é zero para evitar divisão por zero.
+	if (totalVolume == 0)
+		return(-1);
+
+	vwap /= totalVolume;  // Calcula o VWAP dividindo pela soma total de volumes.
+
+	return((int)((vwap - low) / step + 0.5));  // Retorna o índice correspondente ao VWAP.
+}
+
+// Função para obter dados de ticks dentro de um intervalo de tempo.
+int GetHgByTicks(const datetime timeFrom, const datetime timeTo, const double point, const ENUM_TIMEFRAMES dataPeriod, const ENUM_APPLIED_VOLUME appliedVolume, double &low, double &volumes[])
+{
+	// Obtém os volumes de ticks no intervalo especificado.
+	long tickVolumes[];
+	int tickVolumeCount = CopyTickVolume(_Symbol, dataPeriod, timeFrom, timeTo, tickVolumes);
+
+	// Verifica se houve sucesso na cópia dos dados.
+	if (tickVolumeCount <= 0)
+		return(0);  // Retorna 0 se nenhum dado foi obtido.
+
+	// Soma os volumes totais de ticks.
+	long tickVolumesTotal = Sum(tickVolumes);
+
+	// Copia os ticks de negociação no intervalo especificado.
+	MqlTick ticks[];
+	int tickCount = CopyTicks(_Symbol, ticks, COPY_TICKS_TRADE, timeFrom * 1000, (uint)tickVolumesTotal);
+
+	// Verifica se houve sucesso na cópia dos ticks.
+	if (tickCount <= 0)
+		return(0);
+
+	// Inicializa os limites de preço com o primeiro tick.
+	MqlTick tick = ticks[0];
+	low = NORM_PRICE(tick.last, point);  // Normaliza o preço para baixo.
+	double high = low;  // Define o preço alto inicial como o mesmo.
+
+	// Converte o tempo final para milissegundos.
+	long timeToMs = timeTo * 1000;
+
+	// Percorre os ticks para determinar os limites de preço.
+	for (int i = 1; i < tickCount; i++)
+	{
+		tick = ticks[i];
+
+		// Verifica se o tick está fora do intervalo especificado.
+		if (tick.time_msc > timeToMs)
+		{
+			tickCount = i;  // Ajusta a contagem de ticks processados.
+			break;
+		}
+
+		double tickLast = NORM_PRICE(tick.last, point);  // Normaliza o preço do tick atual.
+
+		if (tickLast < low)
+			low = tickLast;  // Atualiza o preço baixo se necessário.
+
+		if (tickLast > high)
+			high = tickLast;  // Atualiza o preço alto se necessário.
+	}
+
+	// Calcula os índices de preço normalizado.
+	int lowIndex = ROUND_PRICE(low, point);
+	int highIndex = ROUND_PRICE(high, point);
+	int hgSize = highIndex - lowIndex + 1;  // Tamanho do histograma.
+
+	// Redimensiona o array de volumes para o tamanho do histograma.
+	ArrayResize(volumes, hgSize);
+	ArrayInitialize(volumes, 0);  // Inicializa os volumes como zero.
+
+	// Percorre os ticks novamente para preencher os volumes.
+	for (int j = 0; j < tickCount; j++)
+	{
+		tick = ticks[j];
+		int pri = ROUND_PRICE(tick.last, point) - lowIndex;  // Calcula o índice do preço.
+		volumes[pri] += (appliedVolume == VOLUME_REAL) ? (double)tick.volume : 1;  // Adiciona o volume correspondente.
+	}
+
+	return(hgSize);  // Retorna o tamanho do histograma.
+}
+
+//Funções finais relacionadas ao desenho de gráficos, fechamento, onde consolidamos toda a funcionalidade do código. 
+
+// Função para desenhar uma linha vertical no gráfico.
+void DrawVLine(const string name, const datetime time1, const color lineColor, const int width, const int style, const bool back)
+{
+	// Verifica se o objeto gráfico já existe e o exclui para evitar duplicação.
+	if (ObjectFind(0, name) >= 0)
+		ObjectDelete(0, name);
+
+	// Cria uma linha vertical no gráfico com os parâmetros especificados.
+	ObjectCreate(0, name, OBJ_VLINE, 0, time1, 0);
+	ObjectSetInteger(0, name, OBJPROP_COLOR, lineColor);  // Define a cor da linha.
+	ObjectSetInteger(0, name, OBJPROP_BACK, back);        // Define se a linha será renderizada no fundo.
+	ObjectSetInteger(0, name, OBJPROP_STYLE, style);      // Define o estilo da linha (pontilhada, sólida, etc.).
+	ObjectSetInteger(0, name, OBJPROP_WIDTH, width);      // Define a largura da linha.
+}
+
+// Função para desenhar uma barra no gráfico, representando volumes ou dados.
+void DrawBar(const string name, const datetime time1, const datetime time2, const double price,
+	const color lineColor, const int width, const ENUM_VP_BAR_STYLE barStyle, const ENUM_LINE_STYLE lineStyle, bool back)
+{
+	// Exclui o objeto gráfico caso ele já exista.
+	ObjectDelete(0, name);
+
+	// Cria o objeto gráfico com base no estilo especificado.
+	if (barStyle == VP_BAR_STYLE_BAR)
+	{
+		// Barra vazia representada por um retângulo.
+		ObjectCreate(0, name, OBJ_RECTANGLE, 0, time1, price - _hgPoint / 2.0, time2, price + _hgPoint / 2.0);
+	}
+	else if ((barStyle == VP_BAR_STYLE_FILLED) || (barStyle == VP_BAR_STYLE_COLOR))
+	{
+		// Barra preenchida representada por um retângulo.
+		ObjectCreate(0, name, OBJ_RECTANGLE, 0, time1, price - _hgPoint / 2.0, time2, price + _hgPoint / 2.0);
+	}
+	else if (barStyle == VP_BAR_STYLE_OUTLINE)
+	{
+		// Linha de contorno representada por um objeto de tendência.
+		ObjectCreate(0, name, OBJ_TREND, 0, time1, price, time2, price + _hgPoint);
+	}
+	else
+	{
+		// Linha simples representada por um objeto de tendência.
+		ObjectCreate(0, name, OBJ_TREND, 0, time1, price, time2, price);
+	}
+
+	// Configura o estilo visual do objeto gráfico criado.
+	SetBarStyle(name, lineColor, width, barStyle, lineStyle, back);
+}
+
+// Função para configurar o estilo de um objeto gráfico (barra ou linha).
+void SetBarStyle(const string name, const color lineColor, const int width, const ENUM_VP_BAR_STYLE barStyle, const ENUM_LINE_STYLE lineStyle, bool back)
+{
+	// Torna o objeto gráfico oculto inicialmente.
+	ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+	ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);  // Impede que o objeto seja selecionado.
+
+	// Configura as propriedades visuais.
+	ObjectSetInteger(0, name, OBJPROP_COLOR, lineColor);   // Define a cor.
+	ObjectSetInteger(0, name, OBJPROP_STYLE, lineStyle);   // Define o estilo da linha.
+	ObjectSetInteger(0, name, OBJPROP_WIDTH, lineStyle == STYLE_SOLID ? width : 1);  // Define a largura.
+
+	// Define opções de preenchimento para barras.
+	ObjectSetInteger(0, name, OBJPROP_FILL, (barStyle == VP_BAR_STYLE_FILLED) || (barStyle == VP_BAR_STYLE_COLOR));
+	ObjectSetInteger(0, name, OBJPROP_BACK, back);  // Define se o objeto será renderizado no fundo.
+}
+
+// Função para desenhar uma linha de nível horizontal (exemplo: preço específico).
+void DrawLevel(const string name, const double price)
+{
+	// Exclui qualquer objeto existente com o mesmo nome.
+	ObjectDelete(0, name);
+
+	// Cria uma linha horizontal representando o nível de preço.
+	ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+
+	// Configura as propriedades visuais da linha.
+	ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);       // Torna a linha oculta.
+	ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);  // Impede que a linha seja selecionada.
+	ObjectSetInteger(0, name, OBJPROP_COLOR, _modeLevelColor);  // Define a cor da linha.
+	ObjectSetInteger(0, name, OBJPROP_STYLE, _modeLevelStyle);  // Define o estilo da linha.
+	ObjectSetInteger(0, name, OBJPROP_WIDTH, _modeLevelStyle == STYLE_SOLID ? _modeLevelWidth : 1);  // Define a largura.
+	ObjectSetInteger(0, name, OBJPROP_BACK, false);  // Configura para que a linha não seja renderizada no fundo.
+}
+
+//Aqui consolidamos funções que garantem a interação do gráfico com o indicador, como o controle de temporização e atualização dos objetos:
+
+// Classe para controlar intervalos de tempo em milissegundos.
+class MillisecondTimer
+{
+	private: int _milliseconds;  // Intervalo em milissegundos.
+	private: uint _lastTick;     // Armazena o último tick.
+
+	// Construtor da classe, define o intervalo de tempo.
+	public: void MillisecondTimer(const int milliseconds, const bool reset = true)
+	{
+		_milliseconds = milliseconds;
+
+		if (reset)
+			Reset();  // Reseta o temporizador.
+		else
+			_lastTick = 0;  // Define o último tick como 0.
+	}
+
+	// Verifica se o intervalo definido já foi alcançado.
+	public: bool Check()
+	{
+		uint now = getCurrentTick();  // Obtém o tick atual.
+		bool stop = now >= _lastTick + _milliseconds;  // Verifica se o intervalo passou.
+
+		if (stop)
+			_lastTick = now;  // Atualiza o último tick.
+
+		return(stop);
+	}
+
+	// Reseta o temporizador para o tick atual.
+	public: void Reset()
+	{
+		_lastTick = getCurrentTick();
+	}
+
+	// Obtém o tick atual do sistema.
+	private: uint getCurrentTick() const
+	{
+		return(GetTickCount());
+	}
+}
+
+
